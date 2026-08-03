@@ -24,9 +24,14 @@ The verdict is in **[FEATURE-COVERAGE.md](FEATURE-COVERAGE.md)**, based on the e
 requests against the running service.
 
 Short version: the protocol surface is complete — all 26 operations, every query option V2 defines,
-media link entries, `$links`, composite keys, complex types, a concurrency token. The interesting part is
-**inheritance**: Olingo renders the four-level hierarchy into `$metadata` exactly as declared, and then
-cannot serialize it. §1 of FEATURE-COVERAGE.md explains what that costs and what this server does instead.
+media link entries, `$links`, composite keys, complex types, and a concurrency token with a working
+round trip. The interesting part is **inheritance**: Olingo renders the four-level hierarchy into
+`$metadata` exactly as declared, and then cannot serialize it. §1 of FEATURE-COVERAGE.md explains what
+that costs and what this server does instead.
+
+Three things Olingo gets wrong are corrected here rather than passed on, because each would have made the
+service misstate the protocol: it cannot declare its own `DataServiceVersion`, it cannot serve an
+operation that returns nothing, and it demands a concurrency token without ever comparing it.
 
 ## Architecture
 
@@ -51,7 +56,7 @@ seed data.
 src/main/java/org/odata2ts/library/
 ├─ LibraryServer.java               embedded Jetty + Olingo's plain ODataServlet
 ├─ LibraryServiceFactory.java       assembles EdmProvider + processor
-├─ LibraryProcessor.java            ListsProcessor + the one gap it has (void operations)
+├─ LibraryProcessor.java            ListsProcessor + its two gaps (void operations, ETag validation)
 ├─ DataServiceVersionFilter.java    corrects the version Olingo declares for itself
 ├─ edm/LibraryEdmProvider.java      the model
 ├─ edm/LibraryOperations.java       the 26 function imports

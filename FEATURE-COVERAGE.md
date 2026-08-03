@@ -16,8 +16,9 @@ solving the same problem differently. Olingo has no domain-modelling opinion of 
 the protocol. Where it deviates, it is a **gap**, not a design.
 
 That makes the result sharper than expected in both directions. The protocol surface is essentially
-complete. The gaps are few, but two of them are load-bearing: one shapes the whole service layout, and
-one makes a feature the model deliberately includes untestable.
+complete, and the gaps are few. Three of them this server closes itself, because each would otherwise
+have made the service misstate the protocol rather than its own limits — §3.1 to §3.3. One it cannot:
+inheritance, in §1, which shapes the whole service layout and would mean replacing Olingo's serializer.
 
 ---
 
@@ -80,7 +81,7 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 | `Association` / `AssociationSet`               | ✅ 8 associations, 13 association sets                              |
 | Referential constraint, `OnDelete Cascade`     | ✅ rendered as declared                                             |
 | Four namespaces in one document                | ✅ incl. the deliberate `Branch` name collision across two of them   |
-| `ConcurrencyMode="Fixed"`                      | ✅ in the metadata, and it produces an ETag — but see §3.1           |
+| `ConcurrencyMode="Fixed"`                      | ✅ in the metadata, and it drives a full ETag round trip — §3.1      |
 | Facets: `MaxLength`, `Precision`, `Scale`, `Unicode`, `DefaultValue`, `Nullable` | ✅            |
 | `m:HasStream` media link entries               | ✅ `EBook` (inside the hierarchy) and `AudiobookChapter`            |
 | All 26 operations                              | ✅ every return-type variant, see §2.3                              |
@@ -140,27 +141,45 @@ divergence the CAP adapter exposes, now confirmed against a second, independent 
 
 ## 3. The gaps
 
-### 3.1 Optimistic concurrency is announced but not enforced
+### 3.1 Optimistic concurrency is announced but not enforced — fixed here
 
-`Copy.Condition` is `ConcurrencyMode="Fixed"`, and Olingo does the visible half correctly: every copy
-carries an `ETag: W/"1"` header, and a write without `If-Match` is refused with **428 Precondition
-Required**.
-
-It never compares the value:
+Olingo does the visible half correctly and stops there. `ODataRequestHandler.checkConditions` refuses a
+modifying request that carries **none** of the conditional headers with **428 Precondition Required**,
+and that is the entire implementation: any `If-Match` at all is then accepted, whatever it says.
 
 ```
 DELETE Copies(…,InventoryNumber=1001)                      -> 428   (no If-Match)
 DELETE Copies(…,InventoryNumber=1001)  If-Match: W/"99"    -> 204   (stale, and the entity is gone)
-GET    Copies(…,InventoryNumber=1001)                      -> 404
 ```
 
-The token is required to be *present* and is then ignored, so **412 Precondition Failed is unreachable**
-and two clients can overwrite each other while both believe they are protected. That is worse than not
-implementing it: a client that tests for 428 concludes the service supports optimistic concurrency.
+The token is required to be *present* and then ignored, so **412 Precondition Failed was unreachable** and
+two clients could overwrite each other while both believed they were protected. That is worse than not
+implementing it at all: a client probing for 428 concludes the service supports optimistic concurrency.
 
-This is the one gap that makes a feature the model deliberately includes untestable, and it is the obvious
-candidate for a follow-up — enforcing it means overriding `deleteEntity` and `updateEntity` to compare the
-token. CAP gets this right (test-server-cap FEATURE-COVERAGE.md §4.2: 428 / 200 / 412 all correct).
+**This server enforces it.** `LibraryProcessor` overrides `updateEntity` and `deleteEntity` and compares
+the token before delegating, building it with the same rule Olingo uses to hand it out
+(`AtomEntryEntityProducer.createETag`: every `ConcurrencyMode="Fixed"` property rendered with
+`valueToString`, joined, wrapped in `W/"…"`). `If-Match: *` matches anything, and a header listing
+several tokens succeeds if any of them is current.
+
+The round trip is now complete, including the part that matters — a token going stale as soon as someone
+else has written:
+
+```
+GET    Copies(…,InventoryNumber=1001)                      -> ETag: W/"1"
+MERGE  …  If-Match: W/"1"   {"Condition":7}                -> 204,  ETag becomes W/"7"
+MERGE  …  If-Match: W/"1"   {"Condition":8}                -> 412   (the token went stale)
+MERGE  …  If-Match: W/"7"   {"Condition":8}                -> 204
+DELETE …  (no If-Match)                                    -> 428
+DELETE …  If-Match: *                                      -> 204
+```
+
+Entities without a token are untouched by any of this, as they should be.
+
+**What a client still cannot do.** odata2ts has no ETag handling in its V2 services — nothing reads
+`__metadata.etag`, nothing sends `If-Match` — so `Copies` remains create-and-read-only *through the
+generated client*, and `int-test/olingo-v2` reaches the round trip with raw requests. The gap is now
+entirely on the client side; the server holds up its end.
 
 ### 3.2 `ListsProcessor` cannot express an operation that returns nothing
 
@@ -244,7 +263,7 @@ Deliberate, and not an Olingo limitation:
 | Operations returning nothing                |     ⚠️     | needs a processor override (§3.2)                           |
 | `DataServiceVersion` declaration            |     ⚠️     | not settable; corrected by a filter (§3.3)                  |
 | Typed operation parameters                  |     ⚠️     | typed from the literal, not the declaration (§3.4)          |
-| **Optimistic concurrency**                  |     ❌     | 428 without `If-Match`, but the token is never compared (§3.1) |
+| **Optimistic concurrency**                  |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1) |
 
 ---
 
@@ -262,6 +281,6 @@ favour of one guessed from the request. In each case `$metadata` promises someth
 deliver — and a generated client, which has nothing *but* `$metadata` to go on, is exactly the consumer
 that gets hurt.
 
-Two of those this server corrects, because leaving them would have made it lie about the protocol rather
-than about its own limits. The other two are documented and kept visible, which is what this document is
-for.
+Three of those this server corrects — the version declaration, void operations, and the concurrency token
+— because leaving them would have made it lie about the protocol rather than about its own limits. Only
+inheritance remains, and that one cannot be papered over: it would mean replacing Olingo's serializer.
