@@ -276,7 +276,8 @@ public class LibraryDataSource implements DataSource {
       Book best = null;
       for (Object row : stores.get(LibraryEdmProvider.ES_BOOKS)) {
         Book book = (Book) row;
-        if (best == null || book.getPopularityScore() > best.getPopularityScore()) {
+        // PopularityScore is nullable and a created entity need not carry it, so this must not unbox
+        if (best == null || score(book) > score(best)) {
           best = book;
         }
       }
@@ -423,6 +424,11 @@ public class LibraryDataSource implements DataSource {
 
   private static Short asShort(final Object value) {
     return value == null ? null : ((Number) value).shortValue();
+  }
+
+  /** Nullable in the model, so never unboxed: a medium without a score sorts last. */
+  private static double score(final Book book) {
+    return book.getPopularityScore() == null ? Double.NEGATIVE_INFINITY : book.getPopularityScore();
   }
 
   private Member memberById(final Integer id) throws ODataNotFoundException {
