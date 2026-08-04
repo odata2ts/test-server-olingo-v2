@@ -94,10 +94,11 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 | `$inlinecount=allpages`                                         | 200, `__count` as a **string**, as V2 prescribes           |
 | `/$count` path segment                                          | 200, `text/plain`                                          |
 | V2 filter literals: `guid'…'`, `datetime'…'`, `substringof(…)`  | 200                                                        |
-| `$links`                                                        | 200 — reading; writing is not implemented, see §4          |
+| `$links`                                                        | 200 / 204 — reading and writing, see §3.6                  |
 | Navigation, single- and collection-valued                       | 200                                                        |
 | Property access and `/$value`                                   | 200                                                        |
 | Create, read, replace (`PUT`), delete                           | 201 / 200 / 204 / 204                                      |
+| Linking by reference, in a create or update payload             | 201 / 204 — see §3.6                                       |
 | `MERGE` tunnelled through `POST` + `X-HTTP-Method`              | 204                                                        |
 | Media link entry: `GET` and `PUT` on `/$value`                  | 200 / 204                                                  |
 | `$batch`, multipart                                             | 202, with the inner response embedded                      |
@@ -231,15 +232,44 @@ numeric parameter in this server is read through a normalising helper rather tha
 | `POST` operations answer **201**        | A side-effecting operation returning data answers 201 Created, not 200 — even when it creates nothing |
 | `$batch` answers **202**                | The envelope is 202 Accepted; the embedded responses carry their own status |
 
+### 3.6 Relationship writes — implemented here
+
+Olingo leaves `DataSource.writeRelation` and `deleteRelation` to the application, and every relationship
+in this model is carried by a foreign key on the dependent entity, so linking means writing that key.
+Which of the two sides holds it depends on the direction the navigation is travelled: `Book/Publisher`
+writes `Book.PublisherId`, and `Publisher/Books` writes the very same field on the book being linked.
+With those two methods in place a client can link three ways, and all three answer as they should:
+
+| Scenario                                                             | Result                            |
+| --------------------------------------------------------------------- | --------------------------------- |
+| `POST` with a reference: `"Publisher": {"__metadata": {"uri": "…"}}` | 201, linked                       |
+| `POST` with a nested entity carrying properties (deep insert)        | 201, entity created and linked    |
+| `MERGE`/`PUT` with a reference                                       | 204, link re-pointed (see below)  |
+| `POST`/`PUT`/`DELETE` on a `$links` URI                              | 204                               |
+| A reference to an entity that does not exist                         | 404, nothing written              |
+| `DELETE` of a link that is not there                                  | 404                               |
+
+One gap of Olingo's had to be closed for the third row. `createEntity` runs its payload through
+`createInlinedEntities` and therefore honours a reference; `updateEntity` parses the entry and then only
+calls `setStructuralTypeValuesFromMap`, so the very same reference sent with an update is **dropped
+without a word** — 204, and the link unchanged. That is the worst of the three possible outcomes, so
+`LibraryProcessor.updateEntity` parses the body a second time and applies the references itself.
+
+A reference reaches the parser in two shapes, and both are honoured: in the parent's own metadata, where
+a deferred Atom link ends up, and as a nested entry carrying nothing but a URI, which is what V2's JSON
+`{"__metadata": {"uri": "Publishers(1)"}}` parses into.
+
+Note that a to-one `$links` URI names no target key (`Books(guid'…')/$links/Publisher`), so the entity to
+unlink is looked up through the navigation rather than in the target entity set — that also settles what
+"delete a link that is not there" means.
+
 ---
 
 ## 4. Not implemented here
 
-Deliberate, and not an Olingo limitation:
-
-- **`$links` writes** (`POST`/`PUT`/`DELETE` on a `$links` URI) answer `501`. Reading links works. Every
-  relationship in this model is carried by a foreign key on the dependent entity, so a link write would
-  have to reach across into the other side; V1–V3 grade this a `MAY`.
+- **Deep update.** A nested entity carrying properties of its own is created along with its parent on a
+  `POST` - that is Olingo's own `createInlinedEntities` - but an update never creates or changes one: a
+  `MERGE`/`PUT` payload only ever links what it references, see §3.6.
 
 ---
 
@@ -254,7 +284,7 @@ Deliberate, and not an Olingo limitation:
 | Associations, referential constraints, cascade | ✅      |                                                             |
 | Multiple namespaces                         |     ✅     | four, incl. a deliberate type-name collision                |
 | Media link entries                          |     ✅     | read and write on `/$value`                                 |
-| All query options V2 defines                |     ✅     | incl. `$inlinecount`, `/$count`, `$links` (read)            |
+| All query options V2 defines                |     ✅     | incl. `$inlinecount`, `/$count`, `$links` (read and write)  |
 | CRUD incl. `MERGE` tunnelling               |     ✅     |                                                             |
 | All 26 operations, every return type        |     ✅     | void ones only after extending the processor (§3.2)         |
 | Data type serialization                     |     ✅     | every type as V2 prescribes                                 |
@@ -264,6 +294,7 @@ Deliberate, and not an Olingo limitation:
 | `DataServiceVersion` declaration            |     ⚠️     | not settable; corrected by a filter (§3.3)                  |
 | Typed operation parameters                  |     ⚠️     | typed from the literal, not the declaration (§3.4)          |
 | **Optimistic concurrency**                  |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1) |
+| **Relationship writes**                     |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.6) |
 
 ---
 
