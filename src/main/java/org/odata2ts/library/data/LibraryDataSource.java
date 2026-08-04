@@ -568,21 +568,96 @@ public class LibraryDataSource implements DataSource {
     stores.get(entitySet.getName()).remove(row);
   }
 
+  /**
+   * Links two entities, which is what a client asks for in three different ways: a {@code $links} write,
+   * a navigation property carrying a reference in a create or update payload ({@code __metadata.uri} in
+   * V2's JSON), and a nested entity in such a payload - {@code ListsProcessor} creates that one first and
+   * then arrives here just the same.
+   *
+   * <p>Every relationship of this model is carried by a foreign key on the dependent entity, so linking
+   * means writing that key. Which of the two sides holds it depends on the direction the navigation is
+   * travelled, which is what {@link #foreignKeyHolder} works out - travelling {@code Book/Publisher}
+   * writes {@code Book.PublisherId}, travelling {@code Publisher/Books} writes the very same field on the
+   * book that is being linked.
+   *
+   * <p>The referenced entity is read before anything is written, so a reference to an entity that does
+   * not exist answers 404 instead of quietly storing a dangling key.
+   */
   @Override
   public void writeRelation(final EdmEntitySet sourceEntitySet, final Object sourceData,
       final EdmEntitySet targetEntitySet, final Map<String, Object> targetKeys)
-      throws ODataNotImplementedException {
-    // $links write is a MAY in V1-V3 and is not implemented here: the relationships of this model are
-    // all carried by foreign keys on the dependent entity, so a link write would have to reach into
-    // the other side. Reading links works.
-    throw new ODataNotImplementedException();
+      throws ODataNotImplementedException, ODataNotFoundException, EdmException {
+    Object targetData = readData(targetEntitySet, targetKeys);
+    setRelation(sourceEntitySet.getName(), sourceData, targetEntitySet.getName(), targetData, true);
   }
 
+  /**
+   * Removes a link by clearing the foreign key that carries it.
+   *
+   * <p>The entity to unlink is looked up <em>through the navigation</em>, not in the target entity set,
+   * which settles both shapes this arrives in: a to-many link names its target
+   * ({@code Publishers(3)/$links/Books(guid'…')}) and is only removed when it really is linked, and a
+   * to-one link names none ({@code Books(guid'…')/$links/Publisher}) because there can only be the one.
+   * A to-one that points nowhere yet is no error - there is simply nothing to clear, which is the state
+   * {@code ListsProcessor} passes through here on its way to re-pointing a link.
+   */
   @Override
   public void deleteRelation(final EdmEntitySet sourceEntitySet, final Object sourceData,
       final EdmEntitySet targetEntitySet, final Map<String, Object> targetKeys)
-      throws ODataNotImplementedException {
-    throw new ODataNotImplementedException();
+      throws ODataNotImplementedException, ODataNotFoundException, EdmException {
+    Object targetData = readRelatedData(sourceEntitySet, sourceData, targetEntitySet, targetKeys);
+    if (targetData == null) {
+      return;
+    }
+    if (targetData instanceof List) {
+      // a to-many navigation addressed without naming one of its entities; $links never does this
+      throw new ODataNotImplementedException();
+    }
+    setRelation(sourceEntitySet.getName(), sourceData, targetEntitySet.getName(), targetData, false);
+  }
+
+  /**
+   * Writes or clears the foreign key behind a navigation, mirroring the pairs {@link #related} reads.
+   *
+   * @param link {@code true} to point the key at the other entity, {@code false} to clear it
+   */
+  private void setRelation(final String source, final Object sourceData, final String target,
+      final Object targetData, final boolean link) throws ODataNotImplementedException {
+    // Medium_Copies, travelled from the medium: the key sits on the copy being linked
+    if (LibraryEdmProvider.ES_COPIES.equals(target) && sourceData instanceof Medium) {
+      ((Copy) targetData).setMediumId(link ? ((Medium) sourceData).getId() : null);
+    }
+    // ... and travelled from the copy, where it sits on the copy itself. The association set binds this
+    // one to Books, so a copy of any other medium is not reachable this way - see FEATURE-COVERAGE.md.
+    else if (LibraryEdmProvider.ES_BOOKS.equals(target) && sourceData instanceof Copy) {
+      ((Copy) sourceData).setMediumId(link ? ((Book) targetData).getId() : null);
+    } else if (LibraryEdmProvider.ES_PUBLISHERS.equals(target) && sourceData instanceof Book) {
+      ((Book) sourceData).setPublisherId(link ? ((Publisher) targetData).getId() : null);
+    } else if (LibraryEdmProvider.ES_BOOKS.equals(target) && sourceData instanceof Publisher) {
+      ((Book) targetData).setPublisherId(link ? ((Publisher) sourceData).getId() : null);
+    } else if (LibraryEdmProvider.ES_AUDIOBOOK_CHAPTERS.equals(target) && sourceData instanceof Audiobook) {
+      ((AudiobookChapter) targetData).setAudiobookId(link ? ((Audiobook) sourceData).getId() : null);
+    } else if (LibraryEdmProvider.ES_AUDIOBOOKS.equals(target) && sourceData instanceof AudiobookChapter) {
+      ((AudiobookChapter) sourceData).setAudiobookId(link ? ((Audiobook) targetData).getId() : null);
+    } else if (LibraryEdmProvider.ES_LOANS.equals(target) && sourceData instanceof Member) {
+      ((Loan) targetData).setMemberId(link ? ((Member) sourceData).getId() : null);
+    } else if (LibraryEdmProvider.ES_MEMBERS.equals(target) && sourceData instanceof Loan) {
+      ((Loan) sourceData).setMemberId(link ? ((Member) targetData).getId() : null);
+    } else if (LibraryEdmProvider.ES_RESERVATIONS.equals(target) && sourceData instanceof Member) {
+      ((Reservation) targetData).setMemberId(link ? ((Member) sourceData).getId() : null);
+    } else if (LibraryEdmProvider.ES_ID_DOCUMENTS.equals(target) && sourceData instanceof Member) {
+      ((Member) sourceData).setIdDocumentId(link ? ((IdDocument) targetData).getId() : null);
+    } else if (LibraryEdmProvider.ES_COPIES.equals(target) && sourceData instanceof Loan) {
+      Loan loan = (Loan) sourceData;
+      Copy copy = (Copy) targetData;
+      loan.setCopyMediumId(link ? copy.getMediumId() : null);
+      loan.setCopyInventoryNumber(link ? copy.getInventoryNumber() : null);
+    } else if (LibraryEdmProvider.ES_BRANCHES.equals(target) && sourceData instanceof Copy) {
+      ((Copy) sourceData).setLocationId(link ? ((Branch) targetData).getId() : null);
+    } else {
+      // no navigation of this model leads here; the EDM would have to grow one first
+      throw new ODataNotImplementedException();
+    }
   }
 
   // ------------------------------------------------------------------------------------------------

@@ -1,6 +1,11 @@
 package org.odata2ts.library;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -17,20 +22,28 @@ import org.apache.olingo.odata2.api.edm.EdmFacets;
 import org.apache.olingo.odata2.api.edm.EdmFunctionImport;
 import org.apache.olingo.odata2.api.edm.EdmLiteral;
 import org.apache.olingo.odata2.api.edm.EdmLiteralKind;
+import org.apache.olingo.odata2.api.edm.EdmNavigationProperty;
 import org.apache.olingo.odata2.api.edm.EdmProperty;
 import org.apache.olingo.odata2.api.edm.EdmSimpleType;
 import org.apache.olingo.odata2.api.edm.EdmSimpleTypeException;
+import org.apache.olingo.odata2.api.ep.EntityProvider;
+import org.apache.olingo.odata2.api.ep.EntityProviderReadProperties;
+import org.apache.olingo.odata2.api.ep.entry.ODataEntry;
+import org.apache.olingo.odata2.api.ep.feed.ODataFeed;
+import org.apache.olingo.odata2.api.exception.ODataBadRequestException;
 import org.apache.olingo.odata2.api.exception.ODataException;
 import org.apache.olingo.odata2.api.exception.ODataPreconditionFailedException;
 import org.apache.olingo.odata2.api.processor.ODataResponse;
 import org.apache.olingo.odata2.api.uri.KeyPredicate;
+import org.apache.olingo.odata2.api.uri.UriParser;
 import org.apache.olingo.odata2.api.uri.info.DeleteUriInfo;
 import org.apache.olingo.odata2.api.uri.info.GetFunctionImportUriInfo;
 import org.apache.olingo.odata2.api.uri.info.PutMergePatchUriInfo;
 
 /**
- * {@code ListsProcessor} with two gaps closed: <strong>operations that return nothing</strong>, and
- * <strong>optimistic concurrency that is actually enforced</strong>.
+ * {@code ListsProcessor} with three gaps closed: <strong>operations that return nothing</strong>,
+ * <strong>optimistic concurrency that is actually enforced</strong>, and <strong>links stated in the
+ * payload of an update</strong>.
  *
  * <p>V2 allows a service operation to return no value at all - [MS-ODATA] grades return values as "may
  * return nothing" - and the reference model uses it twice, for {@code ClosureDay} and {@code CheckOut}.
@@ -54,6 +67,11 @@ import org.apache.olingo.odata2.api.uri.info.PutMergePatchUriInfo;
  * produce it - {@code AtomEntryEntityProducer.createETag}: every property whose facets say
  * {@code ConcurrencyMode="Fixed"}, rendered with {@code valueToString} and joined, wrapped in
  * {@code W/"..."}.
+ *
+ * <h2>Links in an update payload</h2>
+ *
+ * Olingo honours a reference sent along with a create and drops the same one sent along with an update,
+ * without a word - see {@link #updateEntity}.
  */
 public class LibraryProcessor extends ListsProcessor {
 
@@ -78,11 +96,117 @@ public class LibraryProcessor extends ListsProcessor {
     return ODataResponse.status(HttpStatusCodes.NO_CONTENT).build();
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Extended by the navigation properties of the payload, which Olingo drops on an update:
+   * {@code updateEntity} parses the entry and then only calls {@code setStructuralTypeValuesFromMap},
+   * so a reference sent along - {@code "Publisher": {"__metadata": {"uri": "Publishers(1)"}}} - is
+   * silently ignored. On a create the very same payload works, because {@code createEntity} runs it
+   * through {@code createInlinedEntities}. Re-pointing a link would therefore answer 204 and change
+   * nothing, which is the worst of the three possible outcomes.
+   *
+   * <p>The body is read into memory so that it can be parsed a second time here, after the structural
+   * update has gone through: an entity that fails to update must not have its links rewritten.
+   */
   @Override
   public ODataResponse updateEntity(final PutMergePatchUriInfo uriInfo, final InputStream content,
       final String requestContentType, final boolean merge, final String contentType) throws ODataException {
     checkConcurrencyToken(uriInfo.getTargetEntitySet(), uriInfo.getKeyPredicates());
-    return super.updateEntity(uriInfo, content, requestContentType, merge, contentType);
+
+    byte[] body = readFully(content);
+    ODataResponse response =
+        super.updateEntity(uriInfo, new ByteArrayInputStream(body), requestContentType, merge, contentType);
+    writeRelations(uriInfo, body, requestContentType, merge);
+    return response;
+  }
+
+  /**
+   * Links whatever the payload of an update references, by the same data source call Olingo makes for a
+   * create or a {@code $links} write.
+   *
+   * <p>Only references are honoured, not a nested entity carrying data: creating or changing one along
+   * the way is a deep insert or deep update, and this is neither.
+   */
+  private void writeRelations(final PutMergePatchUriInfo uriInfo, final byte[] body,
+      final String requestContentType, final boolean merge) throws ODataException {
+    EdmEntitySet entitySet = uriInfo.getTargetEntitySet();
+    EdmEntityType entityType = entitySet.getEntityType();
+    if (entityType.getNavigationPropertyNames().isEmpty()) {
+      return;
+    }
+
+    ODataEntry entry = EntityProvider.readEntry(requestContentType, entitySet, new ByteArrayInputStream(body),
+        EntityProviderReadProperties.init().mergeSemantic(merge).build());
+    URI serviceRoot = getContext().getPathInfo().getServiceRoot();
+    Object data = null;
+
+    for (String navigationPropertyName : entityType.getNavigationPropertyNames()) {
+      List<String> links = referencedUris(entry, navigationPropertyName);
+      if (links.isEmpty()) {
+        continue;
+      }
+      EdmNavigationProperty navigationProperty =
+          (EdmNavigationProperty) entityType.getProperty(navigationPropertyName);
+      EdmEntitySet targetEntitySet = entitySet.getRelatedEntitySet(navigationProperty);
+      if (data == null) {
+        // read once, and only when there is something to link
+        data = dataSource.readData(entitySet, keyMap(uriInfo.getKeyPredicates()));
+      }
+      for (String link : links) {
+        Map<String, Object> targetKeys =
+            keyMap(UriParser.getKeyPredicatesFromEntityLink(targetEntitySet, link, serviceRoot));
+        dataSource.writeRelation(entitySet, data, targetEntitySet, targetKeys);
+      }
+    }
+  }
+
+  /**
+   * The entities a navigation property of the payload points at, in the two shapes a reference reaches
+   * the parser in - the same two {@code createInlinedEntities} distinguishes.
+   *
+   * <p>A reference either sits in the parent's own metadata, which is where a deferred Atom link ends up,
+   * or it arrives as a nested entry that carries nothing but a URI - which is what V2's JSON
+   * {@code {"__metadata": {"uri": "Publishers(1)"}}} parses into. A nested entry with properties of its
+   * own is left alone: it means to create or change an entity, not to point at one.
+   */
+  private static List<String> referencedUris(final ODataEntry entry, final String navigationPropertyName) {
+    List<String> uris = new ArrayList<String>();
+
+    List<String> associationUris = entry.getMetadata().getAssociationUris(navigationPropertyName);
+    if (associationUris != null) {
+      uris.addAll(associationUris);
+    }
+
+    Object inline = entry.getProperties().get(navigationPropertyName);
+    if (inline instanceof ODataEntry) {
+      addIfReference((ODataEntry) inline, uris);
+    } else if (inline instanceof ODataFeed) {
+      for (ODataEntry inlineEntry : ((ODataFeed) inline).getEntries()) {
+        addIfReference(inlineEntry, uris);
+      }
+    }
+    return uris;
+  }
+
+  private static void addIfReference(final ODataEntry entry, final List<String> uris) {
+    if (entry.getProperties().isEmpty() && entry.getMetadata().getUri() != null) {
+      uris.add(entry.getMetadata().getUri());
+    }
+  }
+
+  private static byte[] readFully(final InputStream content) throws ODataException {
+    ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+    byte[] chunk = new byte[8192];
+    try {
+      int read;
+      while ((read = content.read(chunk)) != -1) {
+        buffer.write(chunk, 0, read);
+      }
+    } catch (IOException e) {
+      throw new ODataBadRequestException(ODataBadRequestException.COMMON, e);
+    }
+    return buffer.toByteArray();
   }
 
   @Override
