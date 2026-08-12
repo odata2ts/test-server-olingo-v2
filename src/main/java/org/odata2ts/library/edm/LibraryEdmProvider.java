@@ -11,6 +11,7 @@ import org.apache.olingo.odata2.api.edm.EdmConcurrencyMode;
 import org.apache.olingo.odata2.api.edm.EdmMultiplicity;
 import org.apache.olingo.odata2.api.edm.EdmSimpleTypeKind;
 import org.apache.olingo.odata2.api.edm.FullQualifiedName;
+import org.apache.olingo.odata2.api.edm.provider.AnnotationAttribute;
 import org.apache.olingo.odata2.api.edm.provider.Association;
 import org.apache.olingo.odata2.api.edm.provider.AssociationEnd;
 import org.apache.olingo.odata2.api.edm.provider.AssociationSet;
@@ -79,6 +80,11 @@ public class LibraryEdmProvider extends EdmProvider {
   public static final String NS_SERVICE = "Library.Service";
   public static final String CONTAINER = "LibraryService";
 
+  /** Microsoft's annotation namespace, the home of {@code StoreGeneratedPattern}. */
+  public static final String NS_MS_ANNOTATION = "http://schemas.microsoft.com/ado/2009/02/edm/annotation";
+  /** SAP Gateway's annotation namespace, the home of {@code creatable} / {@code updatable}. */
+  public static final String NS_SAP = "http://www.sap.com/Protocols/SAPData";
+
   // entity sets
   public static final String ES_BOOKS = "Books";
   public static final String ES_MAGAZINES = "Magazines";
@@ -144,7 +150,7 @@ public class LibraryEdmProvider extends EdmProvider {
             simple("Title", EdmSimpleTypeKind.String, facets().setNullable(false).setMaxLength(200)),
             simple("Language", EdmSimpleTypeKind.String, facets().setMaxLength(40)),
             simple("PublicationDate", EdmSimpleTypeKind.DateTime, null),
-            simple("PopularityScore", EdmSimpleTypeKind.Double, null)))
+            computed(simple("PopularityScore", EdmSimpleTypeKind.Double, null))))
         .setNavigationProperties(singletonList(
             nav("Copies", fqn(NS_CIRCULATION, "Medium_Copies"), "Medium", "Copy"))));
 
@@ -271,7 +277,8 @@ public class LibraryEdmProvider extends EdmProvider {
         .setKey(key("Id"))
         .setProperties(asList(
             simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false)),
-            simple("LoanedAt", EdmSimpleTypeKind.DateTimeOffset, facets().setNullable(false).setPrecision(7)),
+            immutable(simple("LoanedAt", EdmSimpleTypeKind.DateTimeOffset,
+                facets().setNullable(false).setPrecision(7))),
             simple("DueDate", EdmSimpleTypeKind.DateTime, facets().setNullable(false)),
             // nullable on purpose: the explicit-null-vs-absent case
             simple("ReturnedAt", EdmSimpleTypeKind.DateTimeOffset, facets().setPrecision(7)),
@@ -524,6 +531,37 @@ public class LibraryEdmProvider extends EdmProvider {
   private static Property simple(final String name, final EdmSimpleTypeKind type, final Facets facets) {
     SimpleProperty property = new SimpleProperty().setName(name).setType(type);
     return facets == null ? property : property.setFacets(facets);
+  }
+
+  /**
+   * The V2 spelling of {@code Core.Computed}: the store owns the value and a client never supplies one.
+   *
+   * <p>Both era-typical dialects are stated, because they are what a V2 client actually meets in the
+   * wild and they normalize onto the same V4 term - Microsoft's {@code StoreGeneratedPattern} from WCF
+   * Data Services, and SAP Gateway's {@code creatable}/{@code updatable} pair, which only means anything
+   * as a pair. They agree here; see library-v2.xml for the full mapping.
+   */
+  private static Property computed(final Property property) {
+    return property.setAnnotationAttributes(asList(
+        new AnnotationAttribute().setNamespace(NS_MS_ANNOTATION).setPrefix("annotation")
+            .setName("StoreGeneratedPattern").setText("Computed"),
+        new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
+            .setName("creatable").setText("false"),
+        new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
+            .setName("updatable").setText("false")));
+  }
+
+  /**
+   * The V2 spelling of {@code Core.Immutable}: settable on insert, fixed from then on.
+   *
+   * <p>Only SAP can say this. {@code StoreGeneratedPattern} has no value for it, because it describes
+   * who <em>generates</em> a value rather than when a client may <em>send</em> one. {@code creatable} is
+   * left at its default {@code true}, which is the whole of the distinction against {@link #computed}.
+   */
+  private static Property immutable(final Property property) {
+    return property.setAnnotationAttributes(singletonList(
+        new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
+            .setName("updatable").setText("false")));
   }
 
   private static Property complexProp(final String name, final FullQualifiedName type) {
