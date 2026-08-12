@@ -84,6 +84,7 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 | `ConcurrencyMode="Fixed"`                      | ✅ in the metadata, and it drives a full ETag round trip — §3.1      |
 | Facets: `MaxLength`, `Precision`, `Scale`, `Unicode`, `DefaultValue`, `Nullable` | ✅            |
 | `m:HasStream` media link entries               | ✅ `EBook` (inside the hierarchy) and `AudiobookChapter`            |
+| Attribute annotations in a foreign namespace   | ✅ both V2 dialects, and enforced on update — §3.7                  |
 | All 26 operations                              | ✅ every return-type variant, see §2.3                              |
 
 ### 2.2 The protocol
@@ -263,6 +264,55 @@ Note that a to-one `$links` URI names no target key (`Books(guid'…')/$links/Pu
 unlink is looked up through the navigation rather than in the target entity set — that also settles what
 "delete a link that is not there" means.
 
+### 3.7 Managed properties: two dialects, one meaning — enforced here
+
+V2 has no vocabularies. The mechanism arrives in 3.0 and the standard terms in V4, so what the V4 model
+says with `<Annotation Term="Core.Computed"/>` has to be carried by the attribute dialects the V2 era
+actually produced. The reference model uses both, and `Property.setAnnotationAttributes` puts them
+straight into `$metadata`:
+
+```xml
+<Property Name="PopularityScore" Type="Edm.Double"
+          annotation:StoreGeneratedPattern="Computed"
+          sap:creatable="false" sap:updatable="false" />
+<Property Name="LoanedAt" Type="Edm.DateTimeOffset" Nullable="false" Precision="7"
+          sap:updatable="false" />
+```
+
+They normalize onto two V4 terms: `StoreGeneratedPattern` (`Identity` or `Computed`) and the SAP pair
+with both `false` mean `Core.Computed`; `sap:updatable="false"` with `creatable` left at its default
+means `Core.Immutable`. `Core.ComputedDefaultValue` and `Core.Permissions` have **no V2 form at all**,
+which is a fact about the protocol version and not about this server — two of the four terms the V4
+model carries simply cannot be stated here.
+
+**One quirk of Olingo's writer worth knowing if you consume this document.** The namespace is declared
+**per attribute occurrence** rather than hoisted to the root, so the same `xmlns:sap` reappears on every
+annotated property:
+
+```xml
+<Property Name="LoanedAt" … sap:updatable="false" xmlns:sap="http://www.sap.com/Protocols/SAPData">
+```
+
+Legal XML, and it parses to the right namespace — but a consumer must resolve prefixes per element
+rather than once for the document. Prefixes are document-chosen throughout; matching on `sap:` instead
+of on the namespace URI would be wrong here as it is anywhere else.
+
+**Enforcement is this server's.** Olingo has no notion of these attributes at runtime — reasonably, they
+are an application concern. But declaring a constraint and then writing the value anyway is the failure
+mode this document keeps returning to, so `LibraryProcessor` reads the values of every property the
+metadata marks non-updatable before delegating and puts them back afterwards. A value sent for such a
+property is **ignored, silently**; the rest of the payload applies as usual:
+
+```
+POST  Loans          {"LoanedAt": "/Date(915148800000)/", …}   -> 201, and LoanedAt is 1999-01-01
+MERGE Loans(bbbb…)   {"LoanedAt": …, "DueDate": …}             -> 204, LoanedAt unchanged, DueDate applied
+MERGE Books(1111…)   {"PopularityScore": 1.0, "Title": …}      -> 204, score unchanged, Title applied
+```
+
+Insert is untouched, which is exactly what separates `Immutable` from `Computed` — and the check reads
+`EdmProperty.getAnnotations()`, so the constraint enforced is by construction the one the client was
+told about.
+
 ---
 
 ## 4. Not implemented here
@@ -295,6 +345,7 @@ unlink is looked up through the navigation rather than in the target entity set 
 | Typed operation parameters                  |     ⚠️     | typed from the literal, not the declaration (§3.4)          |
 | **Optimistic concurrency**                  |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1) |
 | **Relationship writes**                     |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.6) |
+| **Managed-property annotations**            |     ⚠️     | both V2 dialects emitted and enforced, but `ComputedDefaultValue` and `Permissions` have no V2 form (§3.7) |
 
 ---
 

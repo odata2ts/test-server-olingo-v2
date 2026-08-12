@@ -1,5 +1,7 @@
 package org.odata2ts.library;
 
+import static org.odata2ts.library.edm.LibraryEdmProvider.NS_SAP;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -15,6 +17,7 @@ import org.apache.olingo.odata2.annotation.processor.core.datasource.DataSource;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.ValueAccess;
 import org.apache.olingo.odata2.api.commons.HttpHeaders;
 import org.apache.olingo.odata2.api.commons.HttpStatusCodes;
+import org.apache.olingo.odata2.api.edm.EdmAnnotationAttribute;
 import org.apache.olingo.odata2.api.edm.EdmConcurrencyMode;
 import org.apache.olingo.odata2.api.edm.EdmEntitySet;
 import org.apache.olingo.odata2.api.edm.EdmEntityType;
@@ -115,10 +118,67 @@ public class LibraryProcessor extends ListsProcessor {
     checkConcurrencyToken(uriInfo.getTargetEntitySet(), uriInfo.getKeyPredicates());
 
     byte[] body = readFully(content);
+    Map<EdmProperty, Object> preserved = readNonUpdatable(uriInfo);
     ODataResponse response =
         super.updateEntity(uriInfo, new ByteArrayInputStream(body), requestContentType, merge, contentType);
+    restoreNonUpdatable(uriInfo, preserved);
     writeRelations(uriInfo, body, requestContentType, merge);
     return response;
+  }
+
+  /**
+   * The values of every property the metadata declares non-updatable, read before the update runs.
+   *
+   * <p>V2 has no vocabularies, so {@code Core.Computed} and {@code Core.Immutable} reach the client as
+   * attribute annotations - {@code sap:updatable="false"}, and for the computed case Microsoft's
+   * {@code StoreGeneratedPattern} alongside it. Both terms forbid the same thing on an update, so one
+   * rule covers them: a value sent for such a property is <strong>ignored</strong>, silently, and the
+   * rest of the payload is applied as usual.
+   *
+   * <p>Ignoring rather than rejecting is the reading the spec leaves room for and the one most services
+   * take; what would not be defensible is declaring the constraint and then writing the value anyway,
+   * which is the failure mode this whole document keeps returning to.
+   *
+   * <p>Driven off {@code EdmProperty.getAnnotations()} rather than a list kept here, so the constraint
+   * enforced is by construction the one the client was told about.
+   */
+  private Map<EdmProperty, Object> readNonUpdatable(final PutMergePatchUriInfo uriInfo) throws ODataException {
+    EdmEntitySet entitySet = uriInfo.getTargetEntitySet();
+    Map<EdmProperty, Object> preserved = new HashMap<EdmProperty, Object>();
+    Object data = null;
+
+    for (String propertyName : entitySet.getEntityType().getPropertyNames()) {
+      EdmProperty property = (EdmProperty) entitySet.getEntityType().getProperty(propertyName);
+      if (!isNonUpdatable(property)) {
+        continue;
+      }
+      if (data == null) {
+        // read once, and only when the type has such a property at all
+        data = dataSource.readData(entitySet, keyMap(uriInfo.getKeyPredicates()));
+      }
+      preserved.put(property, valueAccess.getPropertyValue(data, property));
+    }
+    return preserved;
+  }
+
+  /** Puts the preserved values back, undoing whatever the payload had to say about them. */
+  private void restoreNonUpdatable(final PutMergePatchUriInfo uriInfo, final Map<EdmProperty, Object> preserved)
+      throws ODataException {
+    if (preserved.isEmpty()) {
+      return;
+    }
+    EdmEntitySet entitySet = uriInfo.getTargetEntitySet();
+    Object data = dataSource.readData(entitySet, keyMap(uriInfo.getKeyPredicates()));
+    for (Map.Entry<EdmProperty, Object> entry : preserved.entrySet()) {
+      valueAccess.setPropertyValue(data, entry.getKey(), entry.getValue());
+    }
+  }
+
+  /** {@code sap:updatable="false"} - the one V2 attribute both terms have in common. */
+  private static boolean isNonUpdatable(final EdmProperty property) throws ODataException {
+    EdmAnnotationAttribute updatable =
+        property.getAnnotations().getAnnotationAttribute("updatable", NS_SAP);
+    return updatable != null && "false".equals(updatable.getText());
   }
 
   /**
