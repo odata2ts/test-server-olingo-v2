@@ -11,7 +11,7 @@
 
   <groupId>org.odata2ts</groupId>
   <artifactId>test-server-olingo-v2</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <packaging>jar</packaging>
 
   <name>test-server-olingo-v2</name>

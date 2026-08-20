@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.1.0...v0.2.0) (2026-08-20)
+
+
+### Features
+
+* annotate the generated keys and let the client assign Branch ([700ad14](https://github.com/odata2ts/test-server-olingo-v2/commit/700ad14923b6871dfeee63bf1ce21bc71d684d10))
+
 ## 0.1.0 (2026-08-19)
 
 
