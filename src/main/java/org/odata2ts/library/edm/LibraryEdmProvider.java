@@ -146,7 +146,7 @@ public class LibraryEdmProvider extends EdmProvider {
     types.add(new EntityType().setName("Medium").setAbstract(true)
         .setKey(key("Id"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false))),
             simple("Title", EdmSimpleTypeKind.String, facets().setNullable(false).setMaxLength(200)),
             simple("Language", EdmSimpleTypeKind.String, facets().setMaxLength(40)),
             simple("PublicationDate", EdmSimpleTypeKind.DateTime, null),
@@ -187,7 +187,7 @@ public class LibraryEdmProvider extends EdmProvider {
         .setKey(key("Id"))
         .setMapping(new Mapping().setMediaResourceMimeTypeKey("getContentType"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false))),
             simple("Title", EdmSimpleTypeKind.String, null)))
         .setNavigationProperties(singletonList(
             nav("Audiobook", fqn(NS_CATALOG, "Audiobook_Chapters"), "Chapter", "Audiobook"))));
@@ -240,7 +240,7 @@ public class LibraryEdmProvider extends EdmProvider {
     types.add(new EntityType().setName("Member")
         .setKey(key("Id"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false))),
             simple("Name", EdmSimpleTypeKind.String, facets().setNullable(false).setMaxLength(100)),
             simple("DateOfBirth", EdmSimpleTypeKind.DateTime, null),
             complexProp("Address", fqn(NS_CATALOG, "PostalAddress")),
@@ -276,7 +276,7 @@ public class LibraryEdmProvider extends EdmProvider {
     types.add(new EntityType().setName("Loan")
         .setKey(key("Id"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false))),
             immutable(simple("LoanedAt", EdmSimpleTypeKind.DateTimeOffset,
                 facets().setNullable(false).setPrecision(7))),
             simple("DueDate", EdmSimpleTypeKind.DateTime, facets().setNullable(false)),
@@ -290,13 +290,13 @@ public class LibraryEdmProvider extends EdmProvider {
     types.add(new EntityType().setName("Reservation")
         .setKey(key("Id"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false))),
             simple("ReservedAt", EdmSimpleTypeKind.DateTimeOffset, facets().setPrecision(7)))));
 
     types.add(new EntityType().setName("IdDocument")
         .setKey(key("Id"))
         .setProperties(asList(
-            simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false)),
+            generatedKey(simple("Id", EdmSimpleTypeKind.Guid, facets().setNullable(false))),
             simple("Scan", EdmSimpleTypeKind.Binary, null),
             simple("UploadedAt", EdmSimpleTypeKind.DateTimeOffset, facets().setPrecision(7)))));
 
@@ -352,7 +352,7 @@ public class LibraryEdmProvider extends EdmProvider {
         new EntityType().setName("Publisher")
             .setKey(key("Id"))
             .setProperties(asList(
-                simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false)),
+                generatedKey(simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false))),
                 simple("Name", EdmSimpleTypeKind.String, facets().setNullable(false).setMaxLength(100)),
                 simple("Country", EdmSimpleTypeKind.String, facets().setMaxLength(60)),
                 simple("Founded", EdmSimpleTypeKind.DateTime, null)))
@@ -361,7 +361,7 @@ public class LibraryEdmProvider extends EdmProvider {
         new EntityType().setName("Branch")
             .setKey(key("Id"))
             .setProperties(asList(
-                simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false)),
+                generatedKey(simple("Id", EdmSimpleTypeKind.Int32, facets().setNullable(false))),
                 simple("City", EdmSimpleTypeKind.String, facets().setMaxLength(80)),
                 simple("Country", EdmSimpleTypeKind.String, facets().setMaxLength(60)))));
 
@@ -545,6 +545,30 @@ public class LibraryEdmProvider extends EdmProvider {
     return property.setAnnotationAttributes(asList(
         new AnnotationAttribute().setNamespace(NS_MS_ANNOTATION).setPrefix("annotation")
             .setName("StoreGeneratedPattern").setText("Computed"),
+        new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
+            .setName("creatable").setText("false"),
+        new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
+            .setName("updatable").setText("false")));
+  }
+
+  /**
+   * The V2 spelling for a key the store hands out: generated on insert, and never a client's to supply.
+   *
+   * <p>{@code Identity} rather than {@code Computed}, which is the whole of the difference between the
+   * two: {@code Identity} is generated when the row appears and stands still afterwards, {@code Computed}
+   * is recomputed on every update. A key is the former. Both normalize onto {@code Core.Computed} for a
+   * client, so nothing downstream can tell them apart - but a reference server should still say the true
+   * one, and this is the only place either value is exercised.
+   *
+   * <p>The SAP pair says the same thing the only way it can, and says it for the clients that read that
+   * dialect instead. Note what V2 cannot say at all: "the client may supply one, otherwise the server
+   * does" - {@code Core.ComputedDefaultValue} has no V2 form, so a key which behaves that way must either
+   * be overstated as generated or left silent. See library-v2-v3.md in the reference model.
+   */
+  private static Property generatedKey(final Property property) {
+    return property.setAnnotationAttributes(asList(
+        new AnnotationAttribute().setNamespace(NS_MS_ANNOTATION).setPrefix("annotation")
+            .setName("StoreGeneratedPattern").setText("Identity"),
         new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")
             .setName("creatable").setText("false"),
         new AnnotationAttribute().setNamespace(NS_SAP).setPrefix("sap")

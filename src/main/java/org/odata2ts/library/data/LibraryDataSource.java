@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.DataSource;
+import org.apache.olingo.odata2.api.commons.HttpStatusCodes;
 import org.apache.olingo.odata2.api.edm.EdmEntitySet;
 import org.apache.olingo.odata2.api.edm.EdmException;
 import org.apache.olingo.odata2.api.edm.EdmFunctionImport;
@@ -532,8 +533,15 @@ public class LibraryDataSource implements DataSource {
   }
 
   @Override
-  public void createData(final EdmEntitySet entitySet, final Object data) throws EdmException {
-    // server-generated keys, so a client can create without inventing one
+  public void createData(final EdmEntitySet entitySet, final Object data)
+      throws EdmException, ODataApplicationException {
+    // Server-generated keys, so a client can create without inventing one - and every one of them says
+    // so in $metadata, through the V2 spelling of Core.Computed. The annotation and this method have to
+    // agree: a key declared generated and then left null would be a metadata that lies.
+    //
+    // Branch is deliberately absent. Its key is a branch code the organisation allocates, so it stays
+    // the client's - see the reference model, which names it as the one entity keyed that way. A create
+    // without it is refused below rather than quietly filled in.
     if (data instanceof Medium && ((Medium) data).getId() == null) {
       ((Medium) data).setId(UUID.randomUUID());
     } else if (data instanceof Loan && ((Loan) data).getId() == null) {
@@ -543,22 +551,54 @@ public class LibraryDataSource implements DataSource {
     } else if (data instanceof IdDocument && ((IdDocument) data).getId() == null) {
       ((IdDocument) data).setId(UUID.randomUUID());
     } else if (data instanceof Member && ((Member) data).getId() == null) {
-      ((Member) data).setId(nextIntegerKey(LibraryEdmProvider.ES_MEMBERS));
+      ((Member) data).setId(nextIntegerKey(entitySet.getName()));
+    } else if (data instanceof AudiobookChapter && ((AudiobookChapter) data).getId() == null) {
+      ((AudiobookChapter) data).setId(nextIntegerKey(entitySet.getName()));
+    } else if (data instanceof PublisherBranch && ((PublisherBranch) data).getId() == null) {
+      ((PublisherBranch) data).setId(nextIntegerKey(entitySet.getName()));
+    } else if (data instanceof Publisher && ((Publisher) data).getId() == null) {
+      ((Publisher) data).setId(nextIntegerKey(entitySet.getName()));
     } else if (data instanceof Branch && ((Branch) data).getId() == null) {
-      ((Branch) data).setId(nextIntegerKey(LibraryEdmProvider.ES_BRANCHES));
+      throw new ODataApplicationException(
+          "Branch.Id is assigned by the client and must be supplied.",
+          java.util.Locale.ENGLISH,
+          HttpStatusCodes.BAD_REQUEST);
     }
     stores.get(entitySet.getName()).add(data);
   }
 
+  /**
+   * The next free key of an {@code Integer}-keyed set, as {@code max + 1}. Good enough for a test server
+   * driven by one client at a time, and deliberately not presented as if it were safe under concurrency.
+   */
   private Integer nextIntegerKey(final String entitySet) {
     int max = 0;
     for (Object row : stores.get(entitySet)) {
-      Integer id = row instanceof Member ? ((Member) row).getId() : ((Branch) row).getId();
+      Integer id = integerKeyOf(row);
       if (id != null && id > max) {
         max = id;
       }
     }
     return max + 1;
+  }
+
+  private Integer integerKeyOf(final Object row) {
+    if (row instanceof Member) {
+      return ((Member) row).getId();
+    }
+    if (row instanceof Branch) {
+      return ((Branch) row).getId();
+    }
+    if (row instanceof AudiobookChapter) {
+      return ((AudiobookChapter) row).getId();
+    }
+    if (row instanceof PublisherBranch) {
+      return ((PublisherBranch) row).getId();
+    }
+    if (row instanceof Publisher) {
+      return ((Publisher) row).getId();
+    }
+    return null;
   }
 
   @Override
