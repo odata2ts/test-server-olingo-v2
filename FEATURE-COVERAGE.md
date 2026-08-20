@@ -41,8 +41,15 @@ Then it cannot serialize it. `EntityInfoAggregator` takes the entity type from t
 typed on `Medium` produces:
 
 ```json
-{"d":{"__metadata":{"type":"Library.Catalog.Medium"},
-      "Id":"11111111-…","Title":"Der Prozess","Language":"de","PopularityScore":"87.5"}}
+{
+  "d": {
+    "__metadata": { "type": "Library.Catalog.Medium" },
+    "Id": "11111111-…",
+    "Title": "Der Prozess",
+    "Language": "de",
+    "PopularityScore": "87.5"
+  }
+}
 ```
 
 `ISBN`, `PageCount` and `AgeRating` are **silently dropped** and `__metadata.type` names the wrong type.
@@ -57,11 +64,11 @@ client; only the addressing differs.
 
 Three further consequences follow from that choice, and they are the price of it:
 
-| Consequence                          | Detail                                                                                     |
-| ------------------------------------ | ------------------------------------------------------------------------------------------ |
-| Media-returning operations narrowed  | `MostReadMedium`, `NewReleases`, `Search`, `RunStockCheck` return `Book` and bind to `Books` — an entity-returning operation is serialized through its entity set and would truncate a mixed result exactly as `Media` would |
-| One association, six association sets | `Medium_Copies` needs binding per leaf, so the container carries `Medium_Copies_Books`, `…_Magazines`, and so on |
-| `Copy.Medium` reaches only `Books`   | The reverse navigation has no single set to point at; the association set binds it to `Books`, so a copy of a DVD has no reachable `Medium` |
+| Consequence                           | Detail                                                                                                                                                                                                                       |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Media-returning operations narrowed   | `MostReadMedium`, `NewReleases`, `Search`, `RunStockCheck` return `Book` and bind to `Books` — an entity-returning operation is serialized through its entity set and would truncate a mixed result exactly as `Media` would |
+| One association, six association sets | `Medium_Copies` needs binding per leaf, so the container carries `Medium_Copies_Books`, `…_Magazines`, and so on                                                                                                             |
+| `Copy.Medium` reaches only `Books`    | The reverse navigation has no single set to point at; the association set binds it to `Books`, so a copy of a DVD has no reachable `Medium`                                                                                  |
 
 **The comparison worth drawing.** [test-server-cap](https://github.com/odata2ts/test-server-cap) lands on
 table-per-leaf-class too (its FEATURE-COVERAGE.md §1.1) — but for the opposite reason. CDS has no entity
@@ -74,50 +81,50 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 
 ### 2.1 The model
 
-| Feature                                        | Result                                                              |
-| ---------------------------------------------- | ------------------------------------------------------------------- |
-| Entity types, keys, **composite keys**         | ✅ `Copies(MediumId=guid'…',InventoryNumber=1001)`                  |
-| Complex types, incl. **abstract + `BaseType`** | ✅ `Address` → `PostalAddress`, serialized with `__metadata.type`   |
-| `Association` / `AssociationSet`               | ✅ 8 associations, 13 association sets                              |
-| Referential constraint, `OnDelete Cascade`     | ✅ rendered as declared                                             |
-| Four namespaces in one document                | ✅ incl. the deliberate `Branch` name collision across two of them   |
-| `ConcurrencyMode="Fixed"`                      | ✅ in the metadata, and it drives a full ETag round trip — §3.1      |
-| Facets: `MaxLength`, `Precision`, `Scale`, `Unicode`, `DefaultValue`, `Nullable` | ✅            |
-| `m:HasStream` media link entries               | ✅ `EBook` (inside the hierarchy) and `AudiobookChapter`            |
-| Attribute annotations in a foreign namespace   | ✅ both V2 dialects, and enforced on update — §3.7                  |
-| All 26 operations                              | ✅ every return-type variant, see §2.3                              |
+| Feature                                                                          | Result                                                             |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Entity types, keys, **composite keys**                                           | ✅ `Copies(MediumId=guid'…',InventoryNumber=1001)`                 |
+| Complex types, incl. **abstract + `BaseType`**                                   | ✅ `Address` → `PostalAddress`, serialized with `__metadata.type`  |
+| `Association` / `AssociationSet`                                                 | ✅ 8 associations, 13 association sets                             |
+| Referential constraint, `OnDelete Cascade`                                       | ✅ rendered as declared                                            |
+| Four namespaces in one document                                                  | ✅ incl. the deliberate `Branch` name collision across two of them |
+| `ConcurrencyMode="Fixed"`                                                        | ✅ in the metadata, and it drives a full ETag round trip — §3.1    |
+| Facets: `MaxLength`, `Precision`, `Scale`, `Unicode`, `DefaultValue`, `Nullable` | ✅                                                                 |
+| `m:HasStream` media link entries                                                 | ✅ `EBook` (inside the hierarchy) and `AudiobookChapter`           |
+| Attribute annotations in a foreign namespace                                     | ✅ both V2 dialects, and enforced on update — §3.7                 |
+| All 26 operations                                                                | ✅ every return-type variant, see §2.3                             |
 
 ### 2.2 The protocol
 
-| Scenario                                                        | Result                                                     |
-| --------------------------------------------------------------- | ---------------------------------------------------------- |
-| `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`    | 200                                                        |
-| `$inlinecount=allpages`                                         | 200, `__count` as a **string**, as V2 prescribes           |
-| `/$count` path segment                                          | 200, `text/plain`                                          |
-| V2 filter literals: `guid'…'`, `datetime'…'`, `substringof(…)`  | 200                                                        |
-| `$links`                                                        | 200 / 204 — reading and writing, see §3.6                  |
-| Navigation, single- and collection-valued                       | 200                                                        |
-| Property access and `/$value`                                   | 200                                                        |
-| Create, read, replace (`PUT`), delete                           | 201 / 200 / 204 / 204                                      |
-| Linking by reference, in a create or update payload             | 201 / 204 — see §3.6                                       |
-| `MERGE` tunnelled through `POST` + `X-HTTP-Method`              | 204                                                        |
-| Media link entry: `GET` and `PUT` on `/$value`                  | 200 / 204                                                  |
-| `$batch`, multipart                                             | 202, with the inner response embedded                      |
-| `$format=json`, and Atom as the default                         | ✅ both — unlike the CAP adapter, which answers 501 for XML |
-| Errors                                                          | `{"error":{"code":…,"message":{"lang":"en","value":…}}}`   |
+| Scenario                                                       | Result                                                      |
+| -------------------------------------------------------------- | ----------------------------------------------------------- |
+| `$filter`, `$orderby`, `$top`, `$skip`, `$select`, `$expand`   | 200                                                         |
+| `$inlinecount=allpages`                                        | 200, `__count` as a **string**, as V2 prescribes            |
+| `/$count` path segment                                         | 200, `text/plain`                                           |
+| V2 filter literals: `guid'…'`, `datetime'…'`, `substringof(…)` | 200                                                         |
+| `$links`                                                       | 200 / 204 — reading and writing, see §3.6                   |
+| Navigation, single- and collection-valued                      | 200                                                         |
+| Property access and `/$value`                                  | 200                                                         |
+| Create, read, replace (`PUT`), delete                          | 201 / 200 / 204 / 204                                       |
+| Linking by reference, in a create or update payload            | 201 / 204 — see §3.6                                        |
+| `MERGE` tunnelled through `POST` + `X-HTTP-Method`             | 204                                                         |
+| Media link entry: `GET` and `PUT` on `/$value`                 | 200 / 204                                                   |
+| `$batch`, multipart                                            | 202, with the inner response embedded                       |
+| `$format=json`, and Atom as the default                        | ✅ both — unlike the CAP adapter, which answers 501 for XML |
+| Errors                                                         | `{"error":{"code":…,"message":{"lang":"en","value":…}}}`    |
 
 ### 2.3 Operations
 
 All 26 work, covering every V2 return-type variant:
 
-| Return type             | Examples                                                              |
-| ----------------------- | --------------------------------------------------------------------- |
-| _(none)_                | `ClosureDay`, `CheckOut` → 204 — but only after §3.2                  |
-| primitive               | `TotalMediaCount` (Int64 as string), `OutstandingBalance`, `Reserve`  |
-| `Collection(primitive)` | `AllLanguages`, `AvailableLanguages`, `CleanUpKeywords`, `BulkRenew`  |
-| complex                 | `LoanMetrics`, `LoanStatistics`, `YearEndClosing`, `AssessCondition`  |
-| `Collection(complex)`   | `StatsPerBranch`, `NoticeHistory`, `RunOverdueNotices`, `RunReminders` |
-| entity                  | `MostReadMedium`, `AvailableCopy`, `Renew`                            |
+| Return type             | Examples                                                                |
+| ----------------------- | ----------------------------------------------------------------------- |
+| _(none)_                | `ClosureDay`, `CheckOut` → 204 — but only after §3.2                    |
+| primitive               | `TotalMediaCount` (Int64 as string), `OutstandingBalance`, `Reserve`    |
+| `Collection(primitive)` | `AllLanguages`, `AvailableLanguages`, `CleanUpKeywords`, `BulkRenew`    |
+| complex                 | `LoanMetrics`, `LoanStatistics`, `YearEndClosing`, `AssessCondition`    |
+| `Collection(complex)`   | `StatsPerBranch`, `NoticeHistory`, `RunOverdueNotices`, `RunReminders`  |
+| entity                  | `MostReadMedium`, `AvailableCopy`, `Renew`                              |
 | `Collection(entity)`    | `NewReleases`, `Search`, `AvailableCopies`, `RenewAll`, `RunStockCheck` |
 
 A primitive result is keyed by the operation name (`{"d":{"TotalMediaCount":"9"}}`), which is exactly what
@@ -128,12 +135,12 @@ A primitive result is keyed by the operation name (`{"d":{"TotalMediaCount":"9"}
 
 Every type is serialized as V2 prescribes — verified against the running service:
 
-| Type                                  | On the wire                | | Type                | On the wire        |
-| ------------------------------------- | -------------------------- |-| ------------------- | ------------------ |
-| `Edm.Int64`, `Decimal`, `Double`, `Single` | `"1841000"`, `"0.31"` — string | | `Edm.Byte`, `SByte` | `2`, `-2` — number |
-| `Edm.Int16`, `Int32`                  | `224` — number             | | `Edm.Guid`          | bare in the payload, `guid'…'` in the URL |
-| `Edm.DateTime`                        | `/Date(1517443200000)/`    | | `Edm.Time`          | `PT9H0M0S`         |
-| `Edm.DateTimeOffset`                  | `/Date(…)/`                | | `Edm.Binary`        | base64             |
+| Type                                       | On the wire                    |     | Type                | On the wire                               |
+| ------------------------------------------ | ------------------------------ | --- | ------------------- | ----------------------------------------- |
+| `Edm.Int64`, `Decimal`, `Double`, `Single` | `"1841000"`, `"0.31"` — string |     | `Edm.Byte`, `SByte` | `2`, `-2` — number                        |
+| `Edm.Int16`, `Int32`                       | `224` — number                 |     | `Edm.Guid`          | bare in the payload, `guid'…'` in the URL |
+| `Edm.DateTime`                             | `/Date(1517443200000)/`        |     | `Edm.Time`          | `PT9H0M0S`                                |
+| `Edm.DateTimeOffset`                       | `/Date(…)/`                    |     | `Edm.Binary`        | base64                                    |
 
 Worth pinning: `Edm.Byte` arrives as a **number**. odata2ts maps `Edm.Byte`/`Edm.SByte` to `string` in its
 V2 digester, which is right for the four string-serialised types above and wrong for these two — the same
@@ -154,7 +161,7 @@ DELETE Copies(…,InventoryNumber=1001)                      -> 428   (no If-Mat
 DELETE Copies(…,InventoryNumber=1001)  If-Match: W/"99"    -> 204   (stale, and the entity is gone)
 ```
 
-The token is required to be *present* and then ignored, so **412 Precondition Failed was unreachable** and
+The token is required to be _present_ and then ignored, so **412 Precondition Failed was unreachable** and
 two clients could overwrite each other while both believed they were protected. That is worse than not
 implementing it at all: a client probing for 428 concludes the service supports optimistic concurrency.
 
@@ -179,8 +186,8 @@ DELETE …  If-Match: *                                      -> 204
 Entities without a token are untouched by any of this, as they should be.
 
 **What a client still cannot do.** odata2ts has no ETag handling in its V2 services — nothing reads
-`__metadata.etag`, nothing sends `If-Match` — so `Copies` remains create-and-read-only *through the
-generated client*, and `int-test/olingo-v2` reaches the round trip with raw requests. The gap is now
+`__metadata.etag`, nothing sends `If-Match` — so `Copies` remains create-and-read-only _through the
+generated client_, and `int-test/olingo-v2` reaches the round trip with raw requests. The gap is now
 entirely on the client side; the server holds up its end.
 
 ### 3.2 `ListsProcessor` cannot express an operation that returns nothing
@@ -216,22 +223,22 @@ rewrites that one attribute on the metadata response and touches nothing else.
 **infers from the text it received** — and ignores the declared parameter type entirely. A parameter
 declared `Edm.Int32` therefore arrives as:
 
-| Request              | Java type in the handler |
-| -------------------- | ------------------------ |
-| `MemberId=2`         | `Byte`                   |
-| `Year=2024`          | `Short`                  |
-| `MemberId=70000`     | `Integer`                |
+| Request          | Java type in the handler |
+| ---------------- | ------------------------ |
+| `MemberId=2`     | `Byte`                   |
+| `Year=2024`      | `Short`                  |
+| `MemberId=70000` | `Integer`                |
 
-So the same operation hands a handler a different type depending on the *value* it was called with, and
+So the same operation hands a handler a different type depending on the _value_ it was called with, and
 the naive cast throws `ClassCastException` at runtime — a 500 the client cannot do anything about. Every
 numeric parameter in this server is read through a normalising helper rather than cast.
 
 ### 3.5 Smaller things
 
-| Observation                             | Detail                                                                     |
-| --------------------------------------- | -------------------------------------------------------------------------- |
-| `POST` operations answer **201**        | A side-effecting operation returning data answers 201 Created, not 200 — even when it creates nothing |
-| `$batch` answers **202**                | The envelope is 202 Accepted; the embedded responses carry their own status |
+| Observation                      | Detail                                                                                                |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `POST` operations answer **201** | A side-effecting operation returning data answers 201 Created, not 200 — even when it creates nothing |
+| `$batch` answers **202**         | The envelope is 202 Accepted; the embedded responses carry their own status                           |
 
 ### 3.6 Relationship writes — implemented here
 
@@ -241,14 +248,14 @@ Which of the two sides holds it depends on the direction the navigation is trave
 writes `Book.PublisherId`, and `Publisher/Books` writes the very same field on the book being linked.
 With those two methods in place a client can link three ways, and all three answer as they should:
 
-| Scenario                                                             | Result                            |
-| --------------------------------------------------------------------- | --------------------------------- |
-| `POST` with a reference: `"Publisher": {"__metadata": {"uri": "…"}}` | 201, linked                       |
-| `POST` with a nested entity carrying properties (deep insert)        | 201, entity created and linked    |
-| `MERGE`/`PUT` with a reference                                       | 204, link re-pointed (see below)  |
-| `POST`/`PUT`/`DELETE` on a `$links` URI                              | 204                               |
-| A reference to an entity that does not exist                         | 404, nothing written              |
-| `DELETE` of a link that is not there                                  | 404                               |
+| Scenario                                                             | Result                           |
+| -------------------------------------------------------------------- | -------------------------------- |
+| `POST` with a reference: `"Publisher": {"__metadata": {"uri": "…"}}` | 201, linked                      |
+| `POST` with a nested entity carrying properties (deep insert)        | 201, entity created and linked   |
+| `MERGE`/`PUT` with a reference                                       | 204, link re-pointed (see below) |
+| `POST`/`PUT`/`DELETE` on a `$links` URI                              | 204                              |
+| A reference to an entity that does not exist                         | 404, nothing written             |
+| `DELETE` of a link that is not there                                 | 404                              |
 
 One gap of Olingo's had to be closed for the third row. `createEntity` runs its payload through
 `createInlinedEntities` and therefore honours a reference; `updateEntity` parses the entry and then only
@@ -284,6 +291,22 @@ with both `false` mean `Core.Computed`; `sap:updatable="false"` with `creatable`
 means `Core.Immutable`. `Core.ComputedDefaultValue` and `Core.Permissions` have **no V2 form at all**,
 which is a fact about the protocol version and not about this server — two of the four terms the V4
 model carries simply cannot be stated here.
+
+**Every generated key says so, and one deliberately does not.** Eight of the nine single keys carry
+`StoreGeneratedPattern="Identity"` plus the SAP pair — `Identity` rather than `Computed` because that is
+what a key is: generated when the row appears and unchanged afterwards, where `Computed` would claim it
+is recomputed on every update. Both normalize onto `Core.Computed` for a client, so nothing downstream
+can tell them apart, but this is the only place either value is exercised at all.
+
+`Branch/Id` is the exception and the point of the exercise: a branch code the organisation allocates, so
+it stays bare, `createData` refuses a create without it (400) rather than filling one in, and a client
+reading `$metadata` can finally tell a key it must supply from one it must not. `Copy`'s composite key is
+the same case with two parts. The reference model names both.
+
+Note what cannot be said here. Both keys behave like CAP's — the server would happily take a client value
+and generate one otherwise — but that is `Core.ComputedDefaultValue`, which has no V2 form. So the
+generated keys are **overstated** as owned by the server rather than understated as unknown, which is the
+lesser of the two lies available in this version.
 
 **One quirk of Olingo's writer worth knowing if you consume this document.** The namespace is declared
 **per attribute occurrence** rather than hoisted to the root, so the same `xmlns:sap` reappears on every
@@ -327,25 +350,25 @@ told about.
 
 **Realizable** answers "can Olingo 2 serve this?" — ✅ yes, ⚠️ with a caveat, ❌ no.
 
-| Feature                                     | Realizable | Note                                                        |
-| ------------------------------------------- | :--------: | ----------------------------------------------------------- |
-| Entity types, composite keys, complex types |     ✅     |                                                             |
-| Complex type inheritance, abstract          |     ✅     |                                                             |
-| Associations, referential constraints, cascade | ✅      |                                                             |
-| Multiple namespaces                         |     ✅     | four, incl. a deliberate type-name collision                |
-| Media link entries                          |     ✅     | read and write on `/$value`                                 |
-| All query options V2 defines                |     ✅     | incl. `$inlinecount`, `/$count`, `$links` (read and write)  |
-| CRUD incl. `MERGE` tunnelling               |     ✅     |                                                             |
-| All 26 operations, every return type        |     ✅     | void ones only after extending the processor (§3.2)         |
-| Data type serialization                     |     ✅     | every type as V2 prescribes                                 |
-| `$batch`, Atom **and** JSON                 |     ✅     |                                                             |
-| **Entity type inheritance**                 |     ⚠️     | renders into `$metadata`, cannot be serialized (§1)         |
-| Operations returning nothing                |     ⚠️     | needs a processor override (§3.2)                           |
-| `DataServiceVersion` declaration            |     ⚠️     | not settable; corrected by a filter (§3.3)                  |
-| Typed operation parameters                  |     ⚠️     | typed from the literal, not the declaration (§3.4)          |
-| **Optimistic concurrency**                  |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1) |
-| **Relationship writes**                     |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.6) |
-| **Managed-property annotations**            |     ⚠️     | both V2 dialects emitted and enforced, but `ComputedDefaultValue` and `Permissions` have no V2 form (§3.7) |
+| Feature                                        | Realizable | Note                                                                                                       |
+| ---------------------------------------------- | :--------: | ---------------------------------------------------------------------------------------------------------- |
+| Entity types, composite keys, complex types    |     ✅     |                                                                                                            |
+| Complex type inheritance, abstract             |     ✅     |                                                                                                            |
+| Associations, referential constraints, cascade |     ✅     |                                                                                                            |
+| Multiple namespaces                            |     ✅     | four, incl. a deliberate type-name collision                                                               |
+| Media link entries                             |     ✅     | read and write on `/$value`                                                                                |
+| All query options V2 defines                   |     ✅     | incl. `$inlinecount`, `/$count`, `$links` (read and write)                                                 |
+| CRUD incl. `MERGE` tunnelling                  |     ✅     |                                                                                                            |
+| All 26 operations, every return type           |     ✅     | void ones only after extending the processor (§3.2)                                                        |
+| Data type serialization                        |     ✅     | every type as V2 prescribes                                                                                |
+| `$batch`, Atom **and** JSON                    |     ✅     |                                                                                                            |
+| **Entity type inheritance**                    |     ⚠️     | renders into `$metadata`, cannot be serialized (§1)                                                        |
+| Operations returning nothing                   |     ⚠️     | needs a processor override (§3.2)                                                                          |
+| `DataServiceVersion` declaration               |     ⚠️     | not settable; corrected by a filter (§3.3)                                                                 |
+| Typed operation parameters                     |     ⚠️     | typed from the literal, not the declaration (§3.4)                                                         |
+| **Optimistic concurrency**                     |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1)                                |
+| **Relationship writes**                        |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.6)           |
+| **Managed-property annotations**               |     ⚠️     | both V2 dialects emitted and enforced, but `ComputedDefaultValue` and `Permissions` have no V2 form (§3.7) |
 
 ---
 
@@ -360,7 +383,7 @@ The gaps cluster in one revealing place: **things the metadata can say that the 
 Inheritance renders and does not serialize. A concurrency token is declared, demanded, and never checked.
 A version is declared that the service itself contradicts. A parameter's declared type is discarded in
 favour of one guessed from the request. In each case `$metadata` promises something the runtime does not
-deliver — and a generated client, which has nothing *but* `$metadata` to go on, is exactly the consumer
+deliver — and a generated client, which has nothing _but_ `$metadata` to go on, is exactly the consumer
 that gets hurt.
 
 Three of those this server corrects — the version declaration, void operations, and the concurrency token
