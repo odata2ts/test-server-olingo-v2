@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.0...v0.2.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* accept Edm.Byte the way OData V2 states it ([2cbb0d6](https://github.com/odata2ts/test-server-olingo-v2/commit/2cbb0d67056f87f4c4c4041d5545d13de2571c62))
+
 ## [0.2.0](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.1.0...v0.2.0) (2026-08-20)
 
 
