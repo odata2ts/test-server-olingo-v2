@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.1...v0.2.2) (2026-08-25)
+
+
+### Build System
+
+* re-cut the current server as 0.2.2 ([b235e91](https://github.com/odata2ts/test-server-olingo-v2/commit/b235e916594892d921d3d5c3efb31d80b6721267))
+
 ## [0.2.1](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.0...v0.2.1) (2026-08-25)
 
 
