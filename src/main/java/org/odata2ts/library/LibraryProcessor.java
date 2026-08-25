@@ -6,12 +6,14 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.apache.olingo.odata2.annotation.processor.core.ListsProcessor;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.DataSource;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.ValueAccess;
@@ -78,6 +80,8 @@ import org.apache.olingo.odata2.api.uri.info.PutMergePatchUriInfo;
  */
 public class LibraryProcessor extends ListsProcessor {
 
+  private static final Charset UTF8 = Charset.forName("UTF-8");
+
   private final DataSource dataSource;
   private final ValueAccess valueAccess;
 
@@ -117,7 +121,7 @@ public class LibraryProcessor extends ListsProcessor {
       final String requestContentType, final boolean merge, final String contentType) throws ODataException {
     checkConcurrencyToken(uriInfo.getTargetEntitySet(), uriInfo.getKeyPredicates());
 
-    byte[] body = readFully(content);
+    byte[] body = acceptStringEncodedBytes(uriInfo.getTargetEntitySet(), readFully(content));
     Map<EdmProperty, Object> preserved = readNonUpdatable(uriInfo);
     ODataResponse response =
         super.updateEntity(uriInfo, new ByteArrayInputStream(body), requestContentType, merge, contentType);
@@ -253,6 +257,42 @@ public class LibraryProcessor extends ListsProcessor {
     if (entry.getProperties().isEmpty() && entry.getMetadata().getUri() != null) {
       uris.add(entry.getMetadata().getUri());
     }
+  }
+
+  /**
+   * Accepts {@code Edm.Byte} and {@code Edm.SByte} the way the specification says they travel.
+   *
+   * <p>OData V2's JSON format states both as <em>strings</em>: "Literal form of Edm.Byte as used in URIs
+   * formatted as a JSON string" - unlike {@code Edm.Int16} and {@code Edm.Int32}, which are JSON numbers,
+   * and like {@code Edm.Int64} and {@code Edm.Decimal}, which are strings again. See
+   * <a href="https://www.odata.org/documentation/odata-version-2-0/json-format/">OData V2, JSON Format</a>.
+   *
+   * <p>Olingo's reader disagrees and rejects the conforming payload with "The request body is malformed",
+   * so a client that follows the specification - odata2ts does - cannot write a byte-typed property at
+   * all. {@code Copy.Condition} is one, and it is also the concurrency token, so this surfaced the moment
+   * a client could write to a copy in the first place.
+   *
+   * <p>The quotes are stripped before Olingo sees the body, for the properties the EDM says are byte-typed
+   * and no others. A payload that states the number directly is left alone, so both spellings work.
+   */
+  private byte[] acceptStringEncodedBytes(final EdmEntitySet entitySet, final byte[] body)
+      throws ODataException {
+    if (entitySet == null) {
+      return body;
+    }
+    EdmEntityType entityType = entitySet.getEntityType();
+    String json = new String(body, UTF8);
+
+    for (String propertyName : entityType.getPropertyNames()) {
+      EdmProperty property = (EdmProperty) entityType.getProperty(propertyName);
+      String typeName = property.getType().getName();
+      if (!"Byte".equals(typeName) && !"SByte".equals(typeName)) {
+        continue;
+      }
+      json = json.replaceAll("(\"" + Pattern.quote(propertyName) + "\"\\s*:\\s*)\"(-?\\d+)\"", "$1$2");
+    }
+
+    return json.getBytes(UTF8);
   }
 
   private static byte[] readFully(final InputStream content) throws ODataException {

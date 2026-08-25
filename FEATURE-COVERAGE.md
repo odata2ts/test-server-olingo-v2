@@ -91,7 +91,7 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 | `ConcurrencyMode="Fixed"`                                                        | ✅ in the metadata, and it drives a full ETag round trip — §3.1    |
 | Facets: `MaxLength`, `Precision`, `Scale`, `Unicode`, `DefaultValue`, `Nullable` | ✅                                                                 |
 | `m:HasStream` media link entries                                                 | ✅ `EBook` (inside the hierarchy) and `AudiobookChapter`           |
-| Attribute annotations in a foreign namespace                                     | ✅ both V2 dialects, and enforced on update — §3.7                 |
+| Attribute annotations in a foreign namespace                                     | ✅ both V2 dialects, and enforced on update — §3.8                 |
 | All 26 operations                                                                | ✅ every return-type variant, see §2.3                             |
 
 ### 2.2 The protocol
@@ -102,11 +102,11 @@ inheritance at all, so CAP never renders one; Olingo renders it and cannot serve
 | `$inlinecount=allpages`                                        | 200, `__count` as a **string**, as V2 prescribes            |
 | `/$count` path segment                                         | 200, `text/plain`                                           |
 | V2 filter literals: `guid'…'`, `datetime'…'`, `substringof(…)` | 200                                                         |
-| `$links`                                                       | 200 / 204 — reading and writing, see §3.6                   |
+| `$links`                                                       | 200 / 204 — reading and writing, see §3.7                   |
 | Navigation, single- and collection-valued                      | 200                                                         |
 | Property access and `/$value`                                  | 200                                                         |
 | Create, read, replace (`PUT`), delete                          | 201 / 200 / 204 / 204                                       |
-| Linking by reference, in a create or update payload            | 201 / 204 — see §3.6                                        |
+| Linking by reference, in a create or update payload            | 201 / 204 — see §3.7                                        |
 | `MERGE` tunnelled through `POST` + `X-HTTP-Method`             | 204                                                         |
 | Media link entry: `GET` and `PUT` on `/$value`                 | 200 / 204                                                   |
 | `$batch`, multipart                                            | 202, with the inner response embedded                       |
@@ -235,14 +235,35 @@ So the same operation hands a handler a different type depending on the _value_ 
 the naive cast throws `ClassCastException` at runtime — a 500 the client cannot do anything about. Every
 numeric parameter in this server is read through a normalising helper rather than cast.
 
-### 3.5 Smaller things
+### 3.5 `Edm.Byte` is rejected when it arrives as the specification says it should — fixed here
+
+OData V2's JSON format states `Edm.Byte` and `Edm.SByte` as **strings**: "Literal form of Edm.Byte as used
+in URIs formatted as a JSON string" — unlike `Edm.Int16` and `Edm.Int32`, which are JSON numbers, and like
+`Edm.Int64` and `Edm.Decimal`, which are strings again ([OData V2, JSON
+Format](https://www.odata.org/documentation/odata-version-2-0/json-format/)).
+
+Olingo's reader disagrees. The conforming payload comes back as **400 "The request body is malformed"**:
+
+```
+MERGE  Copies(…)   {"Condition":"7"}    -> 400   (the spelling the specification asks for)
+MERGE  Copies(…)   {"Condition":7}      -> 204   (a JSON number, which V2 does not use for this type)
+```
+
+`Copy.Condition` is `Edm.Byte`, so a client following the specification cannot write it at all. Since
+`Condition` is also the concurrency token, this only became visible once a client could write to a copy in
+the first place — odata2ts sends `If-Match` now, and ran straight into it.
+
+**This server accepts both.** `LibraryProcessor` strips the quotes before Olingo reads the body, for the
+properties the EDM says are byte-typed and no others; a payload stating the number directly is untouched.
+
+### 3.6 Smaller things
 
 | Observation                      | Detail                                                                                                |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `POST` operations answer **201** | A side-effecting operation returning data answers 201 Created, not 200 — even when it creates nothing |
 | `$batch` answers **202**         | The envelope is 202 Accepted; the embedded responses carry their own status                           |
 
-### 3.6 Relationship writes — implemented here
+### 3.7 Relationship writes — implemented here
 
 Olingo leaves `DataSource.writeRelation` and `deleteRelation` to the application, and every relationship
 in this model is carried by a foreign key on the dependent entity, so linking means writing that key.
@@ -273,7 +294,7 @@ Note that a to-one `$links` URI names no target key (`Books(guid'…')/$links/Pu
 unlink is looked up through the navigation rather than in the target entity set — that also settles what
 "delete a link that is not there" means.
 
-### 3.7 Managed properties: two dialects, one meaning — enforced here
+### 3.8 Managed properties: two dialects, one meaning — enforced here
 
 V2 has no vocabularies. The mechanism arrives in 3.0 and the standard terms in V4, so what the V4 model
 says with `<Annotation Term="Core.Computed"/>` has to be carried by the attribute dialects the V2 era
@@ -344,7 +365,7 @@ told about.
 
 - **Deep update.** A nested entity carrying properties of its own is created along with its parent on a
   `POST` - that is Olingo's own `createInlinedEntities` - but an update never creates or changes one: a
-  `MERGE`/`PUT` payload only ever links what it references, see §3.6.
+  `MERGE`/`PUT` payload only ever links what it references, see §3.7.
 
 ---
 
@@ -369,8 +390,8 @@ told about.
 | `DataServiceVersion` declaration               |     ⚠️     | not settable; corrected by a filter (§3.3)                                                                 |
 | Typed operation parameters                     |     ⚠️     | typed from the literal, not the declaration (§3.4)                                                         |
 | **Optimistic concurrency**                     |     ✅     | 428 / 204 / 412 all correct — enforced by this server, not by Olingo (§3.1)                                |
-| **Relationship writes**                        |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.6)           |
-| **Managed-property annotations**               |     ⚠️     | both V2 dialects emitted and enforced, but `ComputedDefaultValue` and `Permissions` have no V2 form (§3.7) |
+| **Relationship writes**                        |     ✅     | `$links` and references in a payload; on an update enforced by this server, not by Olingo (§3.7)           |
+| **Managed-property annotations**               |     ⚠️     | both V2 dialects emitted and enforced, but `ComputedDefaultValue` and `Permissions` have no V2 form (§3.8) |
 
 ---
 
