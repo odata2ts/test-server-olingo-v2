@@ -185,10 +185,12 @@ DELETE …  If-Match: *                                      -> 204
 
 Entities without a token are untouched by any of this, as they should be.
 
-**What a client still cannot do.** odata2ts has no ETag handling in its V2 services — nothing reads
-`__metadata.etag`, nothing sends `If-Match` — so `Copies` remains create-and-read-only _through the
-generated client_, and `int-test/olingo-v2` reaches the round trip with raw requests. The gap is now
-entirely on the client side; the server holds up its end.
+**The client side is closed too** (odata2ts 2026-08). Its V2 services read `__metadata.etag` and send
+`If-Match`, deriving the fact that `Copies` is under concurrency control from the `ConcurrencyMode="Fixed"`
+facet this server declares — normalized into `Core.OptimisticConcurrency`, so nothing downstream needs to
+know that V2 states it differently. `int-test/olingo-v2` drives the round trip through the generated
+client rather than through raw requests, and the 412 above is asserted against
+`LibraryProcessor.checkConcurrencyToken`, which is what makes it reachable at all.
 
 ### 3.2 `ListsProcessor` cannot express an operation that returns nothing
 
