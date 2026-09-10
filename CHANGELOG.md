@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.2...v0.2.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* resolve $&lt;id&gt; body references within a batch change set ([#18](https://github.com/odata2ts/test-server-olingo-v2/issues/18)) ([537064d](https://github.com/odata2ts/test-server-olingo-v2/commit/537064d1b2a9ba7ba1707e253681779b1183bbf8))
+
 ## [0.2.2](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.1...v0.2.2) (2026-08-25)
 
 
