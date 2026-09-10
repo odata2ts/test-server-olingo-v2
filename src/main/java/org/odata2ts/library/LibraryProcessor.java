@@ -12,13 +12,18 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.apache.olingo.odata2.annotation.processor.core.ListsProcessor;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.DataSource;
 import org.apache.olingo.odata2.annotation.processor.core.datasource.ValueAccess;
+import org.apache.olingo.odata2.api.batch.BatchHandler;
+import org.apache.olingo.odata2.api.batch.BatchResponsePart;
 import org.apache.olingo.odata2.api.commons.HttpHeaders;
 import org.apache.olingo.odata2.api.commons.HttpStatusCodes;
+import org.apache.olingo.odata2.api.commons.ODataHttpMethod;
 import org.apache.olingo.odata2.api.edm.EdmAnnotationAttribute;
 import org.apache.olingo.odata2.api.edm.EdmConcurrencyMode;
 import org.apache.olingo.odata2.api.edm.EdmEntitySet;
@@ -38,17 +43,20 @@ import org.apache.olingo.odata2.api.ep.feed.ODataFeed;
 import org.apache.olingo.odata2.api.exception.ODataBadRequestException;
 import org.apache.olingo.odata2.api.exception.ODataException;
 import org.apache.olingo.odata2.api.exception.ODataPreconditionFailedException;
+import org.apache.olingo.odata2.api.processor.ODataRequest;
 import org.apache.olingo.odata2.api.processor.ODataResponse;
 import org.apache.olingo.odata2.api.uri.KeyPredicate;
 import org.apache.olingo.odata2.api.uri.UriParser;
 import org.apache.olingo.odata2.api.uri.info.DeleteUriInfo;
 import org.apache.olingo.odata2.api.uri.info.GetFunctionImportUriInfo;
 import org.apache.olingo.odata2.api.uri.info.PutMergePatchUriInfo;
+import org.apache.olingo.odata2.core.batch.BatchHelper;
 
 /**
- * {@code ListsProcessor} with three gaps closed: <strong>operations that return nothing</strong>,
- * <strong>optimistic concurrency that is actually enforced</strong>, and <strong>links stated in the
- * payload of an update</strong>.
+ * {@code ListsProcessor} with four gaps closed: <strong>operations that return nothing</strong>,
+ * <strong>optimistic concurrency that is actually enforced</strong>, <strong>links stated in the
+ * payload of an update</strong>, and <strong>{@code $<id>} references inside a change-set request
+ * body</strong>.
  *
  * <p>V2 allows a service operation to return no value at all - [MS-ODATA] grades return values as "may
  * return nothing" - and the reference model uses it twice, for {@code ClosureDay} and {@code CheckOut}.
@@ -77,6 +85,15 @@ import org.apache.olingo.odata2.api.uri.info.PutMergePatchUriInfo;
  *
  * Olingo honours a reference sent along with a create and drops the same one sent along with an update,
  * without a word - see {@link #updateEntity}.
+ *
+ * <h2>Body references in a change set</h2>
+ *
+ * Olingo resolves a {@code $<id>} token only as the first segment of a sub-request's <em>URL</em> -
+ * {@code ListsProcessor.executeChangeSet} calls {@code BatchHandlerImpl.handleRequest} for every request
+ * in turn, and only that method's own {@code modifyRequest} rewrites a path segment matching
+ * {@code \$.*}. A token placed in the request <em>body</em> instead - SAP's documented shape for binding
+ * a child to the just-created parent, e.g. {@code "MediumId": "$1"} - reaches the data source unresolved
+ * and fails as a malformed GUID. See {@link #executeChangeSet}.
  */
 public class LibraryProcessor extends ListsProcessor {
 
@@ -89,6 +106,116 @@ public class LibraryProcessor extends ListsProcessor {
     super(dataSource, valueAccess);
     this.dataSource = dataSource;
     this.valueAccess = valueAccess;
+  }
+
+  /**
+   * A change-set request body's {@code "$<id>"} value reference, wherever it stands as a whole JSON
+   * string value - {@code "MediumId": "$1"}, not {@code "MediumId": "a $1 discount"}. The spec
+   * recommends numeric request identifiers for exactly this reason (collision avoidance), which this
+   * server's client always uses.
+   */
+  private static final Pattern BODY_REFERENCE = Pattern.compile("\"\\$(\\d+)\"");
+
+  /** The key predicate of a resource path's last segment, e.g. {@code guid'3fa8...'} out of {@code Books(guid'3fa8...')}. */
+  private static final Pattern KEY_PREDICATE = Pattern.compile("\\(([^()]*)\\)/?$");
+
+  /** A key literal wrapped in a type prefix and quotes, e.g. {@code guid'3fa8...'} or plain {@code 'abc'}. */
+  private static final Pattern QUOTED_KEY_LITERAL = Pattern.compile("^[A-Za-z]*'(.*)'$");
+
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Same sequential all-or-nothing loop {@code ListsProcessor.executeChangeSet} runs, extended by
+   * body-reference resolution: before a request is dispatched, every {@code "$<id>"} value already known
+   * - because an earlier request in this same change set created the entity it names - is substituted
+   * with that entity's key, read back off the {@code Location} header Olingo published for it. A
+   * reference to a request that has not run yet, or that named no entity, is left untouched and reaches
+   * the data source as the literal token, which is rejected exactly as before - unresolved is a server
+   * error surfaced in the slot, not a silent no-op.
+   *
+   * <p>URL references ({@code POST $1/Orders}) are unaffected: Olingo resolves those itself, inside
+   * {@code handler.handleRequest}, off its own Content-Id map.
+   */
+  @Override
+  public BatchResponsePart executeChangeSet(final BatchHandler handler, final List<ODataRequest> requests)
+      throws ODataException {
+    Map<String, String> createdEntityKeys = new HashMap<String, String>();
+    List<ODataResponse> responses = new ArrayList<ODataResponse>();
+    for (ODataRequest request : requests) {
+      ODataRequest resolved = resolveBodyReferences(request, createdEntityKeys);
+      ODataResponse response = handler.handleRequest(resolved);
+      if (response.getStatus().getStatusCode() >= HttpStatusCodes.BAD_REQUEST.getStatusCode()) {
+        List<ODataResponse> errorResponses = new ArrayList<ODataResponse>(1);
+        errorResponses.add(response);
+        return BatchResponsePart.responses(errorResponses).changeSet(false).build();
+      }
+      rememberCreatedEntity(resolved, response, createdEntityKeys);
+      responses.add(response);
+    }
+    return BatchResponsePart.responses(responses).changeSet(true).build();
+  }
+
+  /**
+   * Rewrites every already-resolvable {@code "$<id>"} in the request's body. The body stream is read
+   * fully either way - it can only be consumed once - so the request is always rebuilt, even when
+   * nothing changed.
+   */
+  private ODataRequest resolveBodyReferences(final ODataRequest request, final Map<String, String> createdEntityKeys)
+      throws ODataException {
+    InputStream body = request.getBody();
+    if (body == null || createdEntityKeys.isEmpty()) {
+      return request;
+    }
+    String text = new String(readFully(body), UTF8);
+    Matcher matcher = BODY_REFERENCE.matcher(text);
+    StringBuffer rewritten = new StringBuffer();
+    while (matcher.find()) {
+      String value = createdEntityKeys.get("$" + matcher.group(1));
+      if (value != null) {
+        matcher.appendReplacement(rewritten, Matcher.quoteReplacement("\"" + value + "\""));
+      }
+    }
+    matcher.appendTail(rewritten);
+    return ODataRequest.fromRequest(request).body(new ByteArrayInputStream(rewritten.toString().getBytes(UTF8)))
+        .build();
+  }
+
+  /**
+   * Records the key of the entity a change-set request just created, addressed by the same
+   * {@code Content-Id} a later request's {@code "$<id>"} names - the same correlation Olingo's own
+   * URL-reference resolution uses, read from the same {@code Location} header.
+   */
+  private void rememberCreatedEntity(final ODataRequest request, final ODataResponse response,
+      final Map<String, String> createdEntityKeys) {
+    if (request.getMethod() != ODataHttpMethod.POST) {
+      return;
+    }
+    String contentId = request.getRequestHeaderValue(BatchHelper.MIME_HEADER_CONTENT_ID.toLowerCase(Locale.ENGLISH));
+    if (contentId == null) {
+      return;
+    }
+    String location = response.getHeader(HttpHeaders.LOCATION);
+    String keyLiteral = location == null ? null : extractKeyLiteral(location);
+    if (keyLiteral != null) {
+      createdEntityKeys.put("$" + contentId, keyLiteral);
+    }
+  }
+
+  /**
+   * The bare value inside a resource path's key predicate - {@code guid'3fa8...'} becomes
+   * {@code 3fa8...}, {@code 'abc'} becomes {@code abc} - which is how a V2 JSON body spells a
+   * string-typed or GUID-typed property. A composite or numeric key is returned as-is; substituting it
+   * into a body value that is not itself quoted-string-typed is out of scope.
+   */
+  private static String extractKeyLiteral(final String location) {
+    String uri = location.endsWith("/") ? location.substring(0, location.length() - 1) : location;
+    Matcher predicate = KEY_PREDICATE.matcher(uri);
+    if (!predicate.find()) {
+      return null;
+    }
+    String key = predicate.group(1);
+    Matcher quoted = QUOTED_KEY_LITERAL.matcher(key);
+    return quoted.matches() ? quoted.group(1) : key;
   }
 
   @Override
