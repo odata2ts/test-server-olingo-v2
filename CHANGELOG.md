@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.3...v0.2.4) (2026-09-10)
+
+
+### Bug Fixes
+
+* **ci:** re-run release-please after promote to fix the draft-release race ([695f217](https://github.com/odata2ts/test-server-olingo-v2/commit/695f21714b459e7697ffa26b5b4f5a678cf6e2e1))
+
 ## [0.2.3](https://github.com/odata2ts/test-server-olingo-v2/compare/v0.2.2...v0.2.3) (2026-09-10)
 
 
